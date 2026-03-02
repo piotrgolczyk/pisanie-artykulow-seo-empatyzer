@@ -503,6 +503,8 @@ if ($action) {
         $topics = read_topics_file($bPath);
         ensure_global_total($state, $topics);
 
+        $uiPreparedOnly = false;
+
         // Ensure we have a current topic
         if ($state['runtime']['current_topic_index'] === null) {
           // Rewrite queue takes priority in any phase
@@ -516,6 +518,7 @@ if ($action) {
             $state['runtime']['current_is_rewrite'] = $rw;
             $state['runtime']['retry_count'] = 0;
             log_event($state, 'info', 'sprint', 'REWRITE: rozpoczynam przepisywanie — ' . ($rw['title'] ?? '') . ' (orig=' . ($rw['orig_article_id'] ?? '') . ')');
+            $uiPreparedOnly = true;
 
           } elseif (($state['runtime']['phase'] ?? 'write') === 'translate') {
             // Translate phase: find next article with PL but missing translations
@@ -545,6 +548,7 @@ if ($action) {
             $state['runtime']['retry_count']          = 0;
             $state['runtime']['status']               = 'running';
             log_event($state, 'info', 'sprint', "TRANSLATE POBOCZNE: artykuł {$missing['article_id']} — {$tArtTitle} — brakujący język: {$missing['lang']}");
+            $uiPreparedOnly = true;
 
           } else {
             // Write phase: pick next topic to write in PL
@@ -566,7 +570,14 @@ if ($action) {
             $state['runtime']['current_is_rewrite'] = false;
             $state['runtime']['retry_count'] = 0;
             log_event($state, 'info', 'sprint', 'Picked next topic: #' . $t['index'] . ' — ' . ($t['tytul'] ?? ''));
+            $uiPreparedOnly = true;
           }
+        }
+
+        if ($uiPreparedOnly) {
+          $state['runtime']['current_step_status'] = 'queued';
+          save_state($state);
+          json_response(['ok'=>true,'state'=>$state,'prepared'=>true]);
         }
 
         // Load fresh state after modifications

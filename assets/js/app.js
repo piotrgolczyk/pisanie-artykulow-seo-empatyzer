@@ -377,7 +377,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
       else if (isSkipped) icon = `<span class="st st-skipped" data-tip="Pominięto"></span>`;
       else if (curStage === 'TRANSLATE_'+lg.toUpperCase()) {
         const el = elapsedHtml(stepStartTs);
-        icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+        icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · phase=${phase} · article=${curId||'-'} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
       } else icon = `<span class="st st-pending" data-tip="Oczekuje"></span>`;
       return `<td style="text-align:center">${icon}</td>`;
     }).join('');
@@ -403,7 +403,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
           icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu w języku polskim · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}" onclick="openPromptModal()">${el}</span>`;
         } else if (isCurrentTopic && curId && curStage === 'TRANSLATE_'+lg.toUpperCase()) {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · phase=${phase} · article=${curId||'-'} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
         } else if (isCurrentTopic && curId) {
           // Check if this language is already done for current article (from articles array)
           const curArt = articles.find(a => a.article_id === curId);
@@ -455,7 +455,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
           icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}" onclick="openPromptModal()">${el}</span>`;
         } else if (isActive && curStage === 'TRANSLATE_'+lg.toUpperCase()) {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · phase=${phase} · article=${curId||'-'} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
         } else {
           icon = `<span class="st st-pending" data-tip="Nie rozpoczęto"></span>`;
         }
@@ -1029,6 +1029,8 @@ const startRunner = () => {
     if (!st) { runnerActive=false; return; }
 
     if (st.runtime?.status === 'running') {
+      // UX first: show latest queued/active row before requesting next heavy step
+      await fetchArticles();
       try { await api('run_step'); } catch(e) { console.error('run_step:', e); }
       await fetchArticles();
       setTimeout(tick, 50);
