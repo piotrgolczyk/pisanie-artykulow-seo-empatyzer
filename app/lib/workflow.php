@@ -20,7 +20,8 @@ function consume_skip_signal(string $lang, string $articleId): bool {
 
 function find_article_needing_translation(array $articles, array $langs, array $skippedLangs = []): ?array {
   // Finds first article that has PL content_html but is missing a translation in any of $langs.
-  // Skips languages that are in $skippedLangs[$articleId][$lang] to prevent infinite retry loops.
+  // NOTE: skipped_langs is intentionally ignored for cross-session catch-up;
+  // manual/auto skips are treated as temporary for the current pass.
   // Returns ['article_idx' => int, 'article_id' => string, 'lang' => string] or null.
   // NOTE: $articles is the flat array of article objects (already extracted from ['articles'] key by caller).
   foreach ($articles as $i => $a) {
@@ -29,8 +30,6 @@ function find_article_needing_translation(array $articles, array $langs, array $
     if (empty($plHtml)) continue; // no PL article yet
     $artId = (string)($a['article_id'] ?? '');
     foreach ($langs as $lg) {
-      // Skip if this lang was permanently skipped for this article
-      if (!empty($skippedLangs[$artId][$lg])) continue;
       $tr = $a['translations'][$lg] ?? null;
       if (!is_array($tr) || empty($tr['content_html'])) {
         return [

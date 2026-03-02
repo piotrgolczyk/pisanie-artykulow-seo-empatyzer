@@ -269,17 +269,21 @@ const renderLog = (log=[]) => {
    ═══════════════════════════════════════════════════════════════ */
 const langCols = ['pl','en','de','fr','it','cs','es'];
 let _lastTopics = [];
+let _lastArticles = [];
 const _previewCache = new Map(); // key: articleId:lang
 const _previewWarmInFlight = new Set();
+const _topicPromptCache = new Map(); // key: topicUid
 
 const fetchArticles = async () => {
   try {
     const r = await api('get_articles');
     _lastTopics = r.topics || [];
     const articles = r.articles || [];
+    _lastArticles = articles;
     const runtime = r.runtime || {};
     renderArticlesTable(articles, _lastTopics, runtime, r.timing||{});
     warmPreviewCache(articles, runtime);
+    warmTopicPromptCache(_lastTopics, articles);
   } catch(e) { console.warn('fetchArticles:', e); }
 };
 
@@ -299,6 +303,8 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
   const stepStartTs = runtime.current_step_start_ts;
   const currentStepStatus = stepStatusLabel(runtime.current_step_status || '');
   const stepElapsed = stepElapsedSec(stepStartTs);
+  const currentStage = runtime.current_stage || '—';
+  const stepStarted = stepStartTs ? new Date(stepStartTs).toLocaleTimeString('pl-PL') : '—';
 
   // Pending topics (not yet completed or skipped)
   const pendingTopics = (topics || []).filter(t => {
@@ -314,6 +320,30 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
 
   let html = '';
   let rowNum = 0;
+
+  const phase = runtime.phase || 'write';
+  const priorityArticle = (phase === 'translate' && curId) ? (articles || []).find(a => a.article_id === curId) : null;
+
+  // ── Priority row: currently translated article on very top ──
+  if (priorityArticle) {
+    rowNum++;
+    const a = priorityArticle;
+    const bgStyle = 'background:rgba(210,153,34,.10)';
+    const cells = langCols.map(lg => {
+      const info = a.langs?.[lg] || {};
+      const isSkipped = skippedLangs[a.article_id]?.[lg];
+      let icon;
+      if (info.status === 'done') icon = `<span class="st st-done" data-tip="Gotowe — kliknij aby podejrzeć" onclick="openPreview('${a.article_id}','${lg}')"></span>`;
+      else if (isSkipped) icon = `<span class="st st-skipped" data-tip="Pominięto"></span>`;
+      else if (curStage === 'TRANSLATE_'+lg.toUpperCase()) {
+        const el = elapsedHtml(stepStartTs);
+        icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+      } else icon = `<span class="st st-pending" data-tip="Oczekuje"></span>`;
+      return `<td style="text-align:center">${icon}</td>`;
+    }).join('');
+    const titleEsc = esc(a.title_pl || '');
+    html += `<tr style="${bgStyle}"><td class="mono small" style="text-align:right;padding-right:8px;color:var(--warn)">${rowNum}</td><td style="text-align:center" title="Aktualnie tłumaczony">⬆</td><td style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px" title="${titleEsc}">${titleEsc || '<em style="color:var(--muted)">bez tytułu</em>'}</td>${cells}</tr>`;
+  }
 
   // ── Pending section ──
   if (pendingTopics.length > 0) {
@@ -333,7 +363,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
           icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu w języku polskim · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}" onclick="openPromptModal()">${el}</span>`;
         } else if (isCurrentTopic && curId && curStage === 'TRANSLATE_'+lg.toUpperCase()) {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
         } else if (isCurrentTopic && curId) {
           // Check if this language is already done for current article (from articles array)
           const curArt = articles.find(a => a.article_id === curId);
@@ -364,15 +394,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
 
   // ── Completed articles (already in JSON) ──
   if (articles.length > 0) {
-    const phase = runtime.phase || 'write';
-    const sortedArticles = [...articles];
-    if (phase === 'translate' && curId) {
-      sortedArticles.sort((a,b) => {
-        if (a.article_id === curId) return -1;
-        if (b.article_id === curId) return 1;
-        return 0;
-      });
-    }
+    const sortedArticles = [...articles].filter(a => !priorityArticle || a.article_id !== priorityArticle.article_id);
 
     sortedArticles.forEach(a => {
       rowNum++;
@@ -393,7 +415,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
           icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}" onclick="openPromptModal()">${el}</span>`;
         } else if (isActive && curStage === 'TRANSLATE_'+lg.toUpperCase()) {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · etap=${currentStage} · status=${currentStepStatus}${stepStartTs?` · elapsed=${stepElapsed}s · start=${stepStarted}`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
         } else {
           icon = `<span class="st st-pending" data-tip="Nie rozpoczęto"></span>`;
         }
@@ -402,8 +424,7 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
 
       const hasPl = a.langs?.pl?.status === 'done';
       const titleEsc = esc(a.title_pl || '');
-      const titleSafe = (a.title_pl || '').replace(/'/g,"\\'").replace(/"/g,'&quot;').slice(0,60);
-      const actionsCell = hasPl
+        const actionsCell = hasPl
         ? `<td style="text-align:center;white-space:nowrap"><span class="art-actions">` +
           `<button class="art-btn danger" title="Usuń artykuł" onclick="openDeleteModal('${a.article_id}','${titleSafe}')">🗑</button>` +
           `<button class="art-btn" title="Przepisz artykuł" onclick="openRewriteModal('${a.article_id}','${titleSafe}')">↩</button>` +
@@ -424,14 +445,14 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
   }
 
   body.innerHTML = html;
-  const phase = runtime.phase || 'write';
+  const phaseInfo = runtime.phase || 'write';
   const transArticles = articles.filter(a => a.langs?.pl?.status === 'done');
   const incompleteArticles = transArticles.filter(a => langCols.some(lg => lg !== 'pl' && a.langs?.[lg]?.status !== 'done' && !skippedLangs[a.article_id]?.[lg]));
   const missingPairs = incompleteArticles.reduce((sum, a) => sum + langCols.filter(lg => lg !== 'pl' && a.langs?.[lg]?.status !== 'done' && !skippedLangs[a.article_id]?.[lg]).length, 0);
   $('articlesInfo').textContent = `${articles.length} gotowych, ${pendingTopics.length} oczekujących`;
   const tInfo = $('translationLiveInfo');
   if (tInfo) {
-    if (phase === 'translate') {
+    if (phaseInfo === 'translate') {
       const cur = runtime.current_article_id || '—';
       const stage = runtime.current_stage || '—';
       const step = currentStepStatus;
@@ -605,7 +626,7 @@ function warmPreviewCache(articles, runtime) {
       }
     });
   });
-  candidates.slice(0, 6).forEach(([aid, lg, k], idx) => {
+  candidates.slice(0, 60).forEach(([aid, lg, k], idx) => {
     _previewWarmInFlight.add(k);
     setTimeout(async () => {
       try {
@@ -616,7 +637,53 @@ function warmPreviewCache(articles, runtime) {
       } finally {
         _previewWarmInFlight.delete(k);
       }
-    }, idx * 30);
+    }, Math.floor(idx/6) * 10);
+  });
+}
+
+
+function maxArticleIdNum(articles) {
+  let max = 0;
+  (articles || []).forEach(a => {
+    const id = String(a.article_id || '');
+    if (/^\d+$/.test(id)) max = Math.max(max, parseInt(id, 10));
+  });
+  return max;
+}
+
+function renderTemplateLocal(template, vars) {
+  let out = String(template || '');
+  Object.entries(vars || {}).forEach(([k, v]) => {
+    const re = new RegExp(`\{\{${k}\}\}`, 'g');
+    out = out.replace(re, String(v ?? ''));
+  });
+  return out;
+}
+
+function buildTopicPromptLocal(topicUid) {
+  const topic = (_lastTopics || []).find(t => String(t._uid || '') === String(topicUid || ''));
+  if (!topic) return null;
+  const nextId = String(maxArticleIdNum(_lastArticles) + 1).padStart(5, '0');
+  const vars = {
+    ARTICLE_ID: nextId,
+    TRANSLATION_GROUP: `pll_preview_${String(topicUid).replace(/[^a-zA-Z0-9]/g,'').slice(0,12) || 'local'}`,
+    TOPIC_INDEX: String(topic.index ?? ''),
+    TOPIC_TITLE: String(topic.tytul ?? ''),
+    TOPIC_SHORT_DESC: String(topic.opis_ogolny ?? ''),
+    TOPIC_LONG_DESC: String(topic.opis_szczegolowy ?? ''),
+  };
+  const prompt = renderTemplateLocal($('promptWrite')?.value || '', vars);
+  return { prompt, vars, topic };
+}
+
+function warmTopicPromptCache(topics, articles) {
+  (topics || []).slice(0, 80).forEach((t, idx) => {
+    const uid = String(t._uid || '');
+    if (!uid || _topicPromptCache.has(uid)) return;
+    setTimeout(() => {
+      const local = buildTopicPromptLocal(uid);
+      if (local) _topicPromptCache.set(uid, local);
+    }, Math.floor(idx/10) * 5);
   });
 }
 
@@ -833,17 +900,39 @@ async function openTopicPromptModal(topicUid, topicTitle) {
   $('promptModalTitle').textContent = `Prompt dla tematu ${topicTitle}`;
   $('promptModalContent').textContent = 'Ładowanie…';
   $('promptModalVars').innerHTML = '';
+
+  const cached = _topicPromptCache.get(topicUid) || buildTopicPromptLocal(topicUid);
+  if (cached?.prompt) {
+    _topicPromptCache.set(topicUid, cached);
+    const vars = cached.vars || {};
+    let htmlPrompt = esc(cached.prompt);
+    const entries = Object.entries(vars).sort((a,b) => String(b[1]).length - String(a[1]).length);
+    entries.forEach(([key, value]) => {
+      const valEsc = esc(String(value));
+      if (valEsc.length > 3) {
+        const regex = new RegExp(valEsc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        htmlPrompt = htmlPrompt.replace(regex, `<span class="prompt-var">${valEsc}</span>`);
+      }
+    });
+    $('promptModalContent').innerHTML = htmlPrompt;
+    $('promptModalVars').innerHTML = '<tr><th class="small" style="text-align:left">Zmienna</th><th class="small" style="text-align:left">Wartość (podgląd)</th></tr>' +
+      entries.map(([k,v]) => {
+        const val = String(v);
+        const short = val.length > 300 ? val.slice(0,300)+'…' : val;
+        return `<tr><td class="vname">${esc(k)}</td><td class="vval" title="${esc(val)}">${esc(short)}</td></tr>`;
+      }).join('');
+  }
+
   try {
     const res = await fetch(`?action=get_topic_prompt&topic_uid=${encodeURIComponent(topicUid)}`);
     const data = await res.json();
     if (!data.ok) {
-      $('promptModalContent').textContent = 'Błąd: ' + (data.error || 'Nieznany błąd');
+      if (!cached) $('promptModalContent').textContent = 'Błąd: ' + (data.error || 'Nieznany błąd');
       return;
     }
-    const prompt = data.prompt;
     const vars = data.vars || {};
-    let htmlPrompt = esc(prompt);
-    // Highlight variable values in prompt text
+    _topicPromptCache.set(topicUid, {prompt: data.prompt, vars});
+    let htmlPrompt = esc(data.prompt);
     const entries = Object.entries(vars).sort((a,b) => String(b[1]).length - String(a[1]).length);
     entries.forEach(([key, value]) => {
       const valEsc = esc(String(value));
@@ -860,7 +949,7 @@ async function openTopicPromptModal(topicUid, topicTitle) {
         return `<tr><td class="vname">${esc(k)}</td><td class="vval" title="${esc(val)}">${esc(short)}</td></tr>`;
       }).join('');
   } catch(e) {
-    $('promptModalContent').textContent = 'Błąd: ' + e.message;
+    if (!cached) $('promptModalContent').textContent = 'Błąd: ' + e.message;
   }
 }
 

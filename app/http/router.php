@@ -792,9 +792,8 @@ if ($action) {
 
           // If language already translated or skipped, advance
           $existing = $articles['articles'][$foundIdx]['translations'][$lang] ?? null;
-          $skipped = $state['runtime']['skipped_langs'][$articleId][$lang] ?? false;
-          if ($skipped === true || (is_array($existing) && !empty($existing['content_html']))) {
-            log_event($state, 'info', 'action', "Skipping {$lang} (already done or skipped).");
+          if (is_array($existing) && !empty($existing['content_html'])) {
+            log_event($state, 'info', 'action', "Skipping {$lang} (already done).");
             // advance
             $order = $state['config']['language_order'];
             $pos = array_search($lang, $order, true);
