@@ -387,6 +387,7 @@ function default_state(): array {
       'last_error' => null,
       'last_output_preview' => null,
       'current_step_start_ts' => null,
+      'current_step_status' => null,
       'current_prompt' => null,
       'current_prompt_vars' => null,
       'retry_count' => 0,
@@ -447,4 +448,3 @@ function sanitize_filename(string $name): string {
   if ($name === '') $name = 'file_' . bin2hex(random_bytes(3)) . '.json';
   return $name;
 }
-

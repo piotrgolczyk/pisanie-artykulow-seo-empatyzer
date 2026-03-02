@@ -150,6 +150,17 @@ if ($action) {
     $articleId = (string)($state['runtime']['current_article_id'] ?? '');
     $signal    = json_encode(['lang'=>$lang,'article_id'=>$articleId,'ts'=>now_iso()]);
     file_put_contents(SKIP_SIGNAL_FILE, $signal);
+    // Best effort: reflect skip intent in state immediately for UX visibility
+    try {
+      with_lock(function() use ($lang, $articleId) {
+        $st = load_state();
+        $st['runtime']['current_step_status'] = 'user_skip_requested';
+        if ($articleId !== '') {
+          $st['runtime']['skipped_langs'][$articleId][$lang] = true;
+        }
+        save_state($st);
+      });
+    } catch (Throwable $e) {}
     json_response(['ok'=>true,'lang'=>$lang,'article_id'=>$articleId]);
   }
 
@@ -541,6 +552,7 @@ if ($action) {
             $t = get_next_topic($topicsNorm, $state['runtime']['completed_topics'], $state['runtime']['skipped_topics']);
             if (!$t) {
               $state['runtime']['status'] = 'done';
+              $state['runtime']['current_step_status'] = 'idle';
               log_event($state, 'success', 'global', 'Wszystkie artykuły napisane po polsku. Możesz teraz uruchomić tłumaczenia.');
               save_state($state);
               json_response(['ok'=>true,'done'=>true,'state'=>$state]);
@@ -612,6 +624,7 @@ if ($action) {
           $state['runtime']['current_prompt'] = $prompt;
           $state['runtime']['current_prompt_vars'] = $rewriteData ? null : ($vars ?? null);
           $state['runtime']['current_step_start_ts'] = now_iso();
+          $state['runtime']['current_step_status'] = 'prepare_request';
           $state['runtime']['last_action'] = 'WRITE_PL';
           $state['runtime']['current_lang'] = 'pl';
           $rewriteLabel = $rewriteData ? ' [REWRITE orig=' . ($rewriteData['orig_article_id'] ?? '') . ']' : '';
@@ -632,7 +645,15 @@ if ($action) {
               $state['config']['model_write'],
               $state['config']['write_reasoning_effort'],
               (int)$state['config']['write_max_output_tokens'],
-              $prompt
+              $prompt,
+              function(string $stg) use (&$state) {
+                static $last = null;
+                $state['runtime']['current_step_status'] = $stg;
+                if ($stg !== $last) {
+                  log_event($state, 'info', 'action', 'WRITE_PL STATUS: ' . $stg);
+                  $last = $stg;
+                }
+              }
             );
             $writeDuration = round(microtime(true) - $tWriteStart, 2);
 
@@ -687,6 +708,7 @@ if ($action) {
             $state['runtime']['current_step_start_ts'] = null;
             $state['runtime']['current_prompt'] = null;
             $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
 
             $usageIn  = $apiMeta['usage']['input_tokens']  ?? '?';
             $usageOut = $apiMeta['usage']['output_tokens'] ?? '?';
@@ -736,6 +758,7 @@ if ($action) {
             $state['runtime']['current_step_start_ts'] = null;
             $state['runtime']['current_prompt'] = null;
             $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
 
             save_state($state);
             json_response(['ok'=>true,'state'=>$state,'auto_skipped'=>true]);
@@ -817,6 +840,35 @@ if ($action) {
 
           $tTransStart = microtime(true);
 
+          // ASAP watchdog: if translation step is already too old, skip immediately.
+          $elapsedNow = 0;
+          if (!empty($state['runtime']['current_step_start_ts'])) {
+            $elapsedNow = max(0, time() - strtotime((string)$state['runtime']['current_step_start_ts']));
+          }
+          if ($elapsedNow > 120) {
+            $state['runtime']['skipped_langs'][$articleId][$lang] = true;
+            log_event($state, 'warn', 'sprint', "WATCHDOG SKIP LANG {$lang} — article_id={$articleId} elapsed={$elapsedNow}s (>120s limit).");
+            $nextLang = null;
+            foreach (($state['config']['language_order'] ?? []) as $lg2) {
+              if ($lg2 === $lang) continue;
+              if (!empty($article['translations'][$lg2]['content_html'])) continue;
+              if (!empty($state['runtime']['skipped_langs'][$articleId][$lg2])) continue;
+              $nextLang = $lg2;
+              break;
+            }
+            if ($nextLang !== null) {
+              $state['runtime']['current_lang'] = $nextLang;
+              $state['runtime']['current_stage'] = 'TRANSLATE_' . strtoupper($nextLang);
+            } else {
+              $state['runtime']['current_stage'] = 'DONE';
+              $state['runtime']['current_lang'] = null;
+            }
+            $state['runtime']['current_step_start_ts'] = null;
+            $state['runtime']['current_step_status'] = 'auto_skipped_timeout';
+            save_state($state);
+            json_response(['ok'=>true,'state'=>$state,'auto_skipped'=>true]);
+          }
+
           try {
             [$tr, $rawText, $apiMeta] = call_model_json(
               $key,
@@ -845,6 +897,7 @@ if ($action) {
               $state['runtime']['current_step_start_ts'] = null;
               $state['runtime']['current_prompt'] = null;
               $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
               log_event($state, 'warn', 'sprint', "USER FORCE-SKIP TRANSLATE {$lang} OK (pominięto po zakończeniu cURL) — article_id={$articleId}.");
               save_state($state);
               json_response(['ok'=>true,'state'=>$state,'force_skipped'=>true]);
@@ -891,6 +944,7 @@ if ($action) {
             $state['runtime']['current_step_start_ts'] = null;
             $state['runtime']['current_prompt'] = null;
             $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
 
             $usageIn  = $apiMeta['usage']['input_tokens']  ?? '?';
             $usageOut = $apiMeta['usage']['output_tokens'] ?? '?';
@@ -925,6 +979,7 @@ if ($action) {
               $state['runtime']['current_step_start_ts'] = null;
               $state['runtime']['current_prompt'] = null;
               $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
               log_event($state, 'warn', 'sprint', "USER FORCE-SKIP TRANSLATE {$lang} OK (pominięto po błędzie/timeout cURL) — article_id={$articleId}.");
               save_state($state);
               json_response(['ok'=>true,'state'=>$state,'force_skipped'=>true]);
@@ -937,9 +992,9 @@ if ($action) {
             );
 
             if ($isCurlTimeout) {
-              // Timeout > 300s — pomiń to tłumaczenie bez retry
+              // Timeout > 120s — pomiń to tłumaczenie bez retry
               $state['runtime']['skipped_langs'][$articleId][$lang] = true;
-              log_event($state, 'warn', 'sprint', "TIMEOUT SKIP LANG {$lang} — article_id={$articleId} dur={$transDurationCatch}s (>300s limit). Pomijam bez retry.");
+              log_event($state, 'warn', 'sprint', "TIMEOUT SKIP LANG {$lang} — article_id={$articleId} dur={$transDurationCatch}s (>120s limit). Pomijam bez retry.");
               // advance stage
               $order = $state['config']['language_order'];
               $pos = array_search($lang, $order, true);
@@ -958,6 +1013,7 @@ if ($action) {
               $state['runtime']['current_step_start_ts'] = null;
               $state['runtime']['current_prompt'] = null;
               $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
               save_state($state);
               json_response(['ok'=>true,'state'=>$state,'auto_skipped'=>true,'timeout'=>true]);
             }
@@ -995,6 +1051,7 @@ if ($action) {
             $state['runtime']['current_step_start_ts'] = null;
             $state['runtime']['current_prompt'] = null;
             $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
 
             save_state($state);
             json_response(['ok'=>true,'state'=>$state,'auto_skipped'=>true]);
@@ -1027,6 +1084,7 @@ if ($action) {
           $state['runtime']['current_step_start_ts'] = null;
           $state['runtime']['current_prompt'] = null;
           $state['runtime']['current_prompt_vars'] = null;
+            $state['runtime']['current_step_status'] = null;
 
           // After a full sprint (PL + all translations): check for missing translations in other articles
           $langOrder = $state['config']['language_order'] ?? ['en','de','fr','it','cs','es'];

@@ -15,6 +15,30 @@ const api = async (action, formData=null) => {
 const $ = id => document.getElementById(id);
 const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
+const stepStatusLabel = st => {
+  const map = {
+    prepare_request: 'przygotowanie requestu',
+    request_prepared: 'request przygotowany',
+    request_sent: 'request wysłany do API',
+    response_received: 'odpowiedź HTTP odebrana',
+    response_text_extracted: 'wyodrębnianie treści odpowiedzi',
+    response_json_found: 'znaleziono JSON w odpowiedzi',
+    response_json_parsed: 'JSON poprawnie sparsowany',
+    user_skip_requested: 'użytkownik wymusił pominięcie',
+    auto_skipped_timeout: 'auto-skip po przekroczeniu limitu czasu',
+    idle: 'bez aktywnego kroku',
+  };
+  return map[st] || (st || 'brak statusu kroku');
+};
+
+const stepElapsedSec = startTs => {
+  if (!startTs) return 0;
+  const start = new Date(startTs).getTime();
+  if (isNaN(start)) return 0;
+  return Math.max(0, Math.floor((Date.now() - start) / 1000));
+};
+
+
 let stateCache = null;
 let keyOk = false;
 let runnerActive = false;
@@ -129,7 +153,12 @@ const forceSkipTranslation = async () => {
     await api('force_skip_translation');
     await syncStatus();
     await fetchArticles();
-  } catch(e) { console.error('forceSkipTranslation:', e); }
+    setTimeout(syncStatus, 120);
+    setTimeout(fetchArticles, 150);
+  } catch(e) {
+    console.error('forceSkipTranslation:', e);
+    alert('Nie udało się pominąć tłumaczenia. Sprawdź, czy aktualnie trwa etap TRANSLATE_XX.');
+  }
 };
 $('btnSkipTrans').addEventListener('click', forceSkipTranslation);
 
@@ -168,7 +197,8 @@ const renderKpis = st => {
   $('kpiAction').textContent = st.runtime?.current_stage || '—';
   const status = st.runtime?.status || '—';
   const lang = st.runtime?.current_lang || '';
-  $('kpiAction2').textContent = `${status}${lang ? ' · '+lang : ''}`;
+  const step = stepStatusLabel(st.runtime?.current_step_status || '');
+  $('kpiAction2').textContent = `${status}${lang ? ' · '+lang : ''} · ${step}`;
 
   // Phase label
   const phase = st.runtime?.phase || 'write';
@@ -267,6 +297,8 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
   const doneSet = new Set(completedTopics);
   const skipSet = new Set(skippedTopics);
   const stepStartTs = runtime.current_step_start_ts;
+  const currentStepStatus = stepStatusLabel(runtime.current_step_status || '');
+  const stepElapsed = stepElapsedSec(stepStartTs);
 
   // Pending topics (not yet completed or skipped)
   const pendingTopics = (topics || []).filter(t => {
@@ -298,10 +330,10 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
         let icon;
         if (isCurrentTopic && lg === 'pl' && curStage === 'WRITE_PL') {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu w języku polskim" onclick="openPromptModal()">${el}</span>`;
+          icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu w języku polskim · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}" onclick="openPromptModal()">${el}</span>`;
         } else if (isCurrentTopic && curId && curStage === 'TRANSLATE_'+lg.toUpperCase()) {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
         } else if (isCurrentTopic && curId) {
           // Check if this language is already done for current article (from articles array)
           const curArt = articles.find(a => a.article_id === curId);
@@ -358,10 +390,10 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
           icon = `<span class="st st-skipped" data-tip="Pominięto (ręcznie lub automatycznie po błędzie)"></span>`;
         } else if (isActive && lg === 'pl' && curStage === 'WRITE_PL') {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu" onclick="openPromptModal()">${el}</span>`;
+          icon = `<span class="st st-writing" data-tip="Trwa pisanie artykułu · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}" onclick="openPromptModal()">${el}</span>`;
         } else if (isActive && curStage === 'TRANSLATE_'+lg.toUpperCase()) {
           const el = elapsedHtml(stepStartTs);
-          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
+          icon = `<span style="display:inline-flex;align-items:center;gap:2px"><span class="st st-translating" data-tip="Trwa tłumaczenie na ${lg.toUpperCase()} · ${currentStepStatus}${stepStartTs?` · ${stepElapsed}s`:''}${stepElapsed>120?' · auto-skip >120s':''}" onclick="openPromptModal()">${el}</span><button class="st-skip-btn" title="Pomiń tłumaczenie ${lg.toUpperCase()}" onclick="forceSkipTranslation()">×</button></span>`;
         } else {
           icon = `<span class="st st-pending" data-tip="Nie rozpoczęto"></span>`;
         }
@@ -402,7 +434,8 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
     if (phase === 'translate') {
       const cur = runtime.current_article_id || '—';
       const stage = runtime.current_stage || '—';
-      tInfo.textContent = `Tryb tłumaczeń zaległych: ${incompleteArticles.length}/${transArticles.length} artykułów bez kompletu, braków językowych: ${missingPairs}. Teraz: ${stage} dla #${cur}.`;
+      const step = currentStepStatus;
+      tInfo.textContent = `Tryb tłumaczeń zaległych: ${incompleteArticles.length}/${transArticles.length} artykułów bez kompletu, braków językowych: ${missingPairs}. Teraz: ${stage} dla #${cur} · ${step}${stepStartTs?` · ${stepElapsed}s`:''}.`;
     } else {
       tInfo.textContent = `Do pełnych kompletów tłumaczeń: ${incompleteArticles.length}/${transArticles.length} artykułów, braków językowych: ${missingPairs}.`;
     }

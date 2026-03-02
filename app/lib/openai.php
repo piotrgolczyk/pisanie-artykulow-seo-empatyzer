@@ -63,7 +63,7 @@ function openai_post_responses(string $apiKey, array $payload): array {
       'Content-Type: application/json',
     ],
     CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-    CURLOPT_TIMEOUT        => 300,
+    CURLOPT_TIMEOUT        => 120,
     CURLOPT_CONNECTTIMEOUT => 15,
   ]);
 
@@ -117,17 +117,21 @@ function openai_post_responses(string $apiKey, array $payload): array {
 }
 
 
-function call_model_json(string $apiKey, string $model, string $reasoningEffort, int $maxOutputTokens, string $prompt): array {
+function call_model_json(string $apiKey, string $model, string $reasoningEffort, int $maxOutputTokens, string $prompt, ?callable $statusCb = null): array {
   // Call Responses API, parse first JSON object from output text, return [parsed, rawText, meta].
+  if ($statusCb) $statusCb('request_prepared');
   $payload = [
     'model'            => $model,
     'input'            => $prompt,
     'reasoning'        => ['effort' => $reasoningEffort],
     'max_output_tokens'=> $maxOutputTokens,
   ];
+  if ($statusCb) $statusCb('request_sent');
   $resp    = openai_post_responses($apiKey, $payload);
+  if ($statusCb) $statusCb('response_received');
   $meta    = $resp['_meta'] ?? [];
   $outText = extract_output_text($resp);
+  if ($statusCb) $statusCb('response_text_extracted');
 
   if (trim($outText) === '') {
     $usage = $meta['usage'] ?? [];
@@ -146,6 +150,7 @@ function call_model_json(string $apiKey, string $model, string $reasoningEffort,
     );
   }
 
+  if ($statusCb) $statusCb('response_json_found');
   $parsed = json_decode($jsonStr, true);
   if (!is_array($parsed)) {
     $err = json_last_error_msg();
@@ -154,6 +159,7 @@ function call_model_json(string $apiKey, string $model, string $reasoningEffort,
       "JSON candidate (" . mb_strlen($jsonStr) . " chars): " . mb_substr($jsonStr, 0, 800)
     );
   }
+  if ($statusCb) $statusCb('response_json_parsed');
   return [$parsed, $outText, $meta];
 }
 
