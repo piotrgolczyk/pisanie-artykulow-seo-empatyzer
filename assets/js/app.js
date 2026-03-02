@@ -464,7 +464,8 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
 
       const hasPl = a.langs?.pl?.status === 'done';
       const titleEsc = esc(a.title_pl || '');
-        const actionsCell = hasPl
+      const titleSafe = (a.title_pl || '').replace(/'/g,"\'").replace(/"/g,'&quot;').slice(0,60);
+      const actionsCell = hasPl
         ? `<td style="text-align:center;white-space:nowrap"><span class="art-actions">` +
           `<button class="art-btn danger" title="Usuń artykuł" onclick="openDeleteModal('${a.article_id}','${titleSafe}')">🗑</button>` +
           `<button class="art-btn" title="Przepisz artykuł" onclick="openRewriteModal('${a.article_id}','${titleSafe}')">↩</button>` +
