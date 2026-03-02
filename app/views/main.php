@@ -140,6 +140,7 @@
         <button class="btn btn-sm secondary" id="btnRefreshArticles">Odśwież</button>
       </div>
     </div>
+    <div class="small" id="translationLiveInfo" style="margin:0 0 8px;color:var(--muted)"></div>
 
     <!-- Progress overview -->
     <div class="progress-wrap" id="progressWrap" style="display:none">

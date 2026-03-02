@@ -238,12 +238,17 @@ const renderLog = (log=[]) => {
    ═══════════════════════════════════════════════════════════════ */
 const langCols = ['pl','en','de','fr','it','cs','es'];
 let _lastTopics = [];
+const _previewCache = new Map(); // key: articleId:lang
+const _previewWarmInFlight = new Set();
 
 const fetchArticles = async () => {
   try {
     const r = await api('get_articles');
     _lastTopics = r.topics || [];
-    renderArticlesTable(r.articles||[], _lastTopics, r.runtime||{}, r.timing||{});
+    const articles = r.articles || [];
+    const runtime = r.runtime || {};
+    renderArticlesTable(articles, _lastTopics, runtime, r.timing||{});
+    warmPreviewCache(articles, runtime);
   } catch(e) { console.warn('fetchArticles:', e); }
 };
 
@@ -326,7 +331,17 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
 
   // ── Completed articles (already in JSON) ──
   if (articles.length > 0) {
-    articles.forEach(a => {
+    const phase = runtime.phase || 'write';
+    const sortedArticles = [...articles];
+    if (phase === 'translate' && curId) {
+      sortedArticles.sort((a,b) => {
+        if (a.article_id === curId) return -1;
+        if (b.article_id === curId) return 1;
+        return 0;
+      });
+    }
+
+    sortedArticles.forEach(a => {
       rowNum++;
       const isActive = a.article_id === curId;
       const bgStyle = isActive ? 'background:rgba(210,153,34,.06)' : '';
@@ -376,7 +391,21 @@ const renderArticlesTable = (articles, topics, runtime, timing) => {
   }
 
   body.innerHTML = html;
+  const phase = runtime.phase || 'write';
+  const transArticles = articles.filter(a => a.langs?.pl?.status === 'done');
+  const incompleteArticles = transArticles.filter(a => langCols.some(lg => lg !== 'pl' && a.langs?.[lg]?.status !== 'done' && !skippedLangs[a.article_id]?.[lg]));
+  const missingPairs = incompleteArticles.reduce((sum, a) => sum + langCols.filter(lg => lg !== 'pl' && a.langs?.[lg]?.status !== 'done' && !skippedLangs[a.article_id]?.[lg]).length, 0);
   $('articlesInfo').textContent = `${articles.length} gotowych, ${pendingTopics.length} oczekujących`;
+  const tInfo = $('translationLiveInfo');
+  if (tInfo) {
+    if (phase === 'translate') {
+      const cur = runtime.current_article_id || '—';
+      const stage = runtime.current_stage || '—';
+      tInfo.textContent = `Tryb tłumaczeń zaległych: ${incompleteArticles.length}/${transArticles.length} artykułów bez kompletu, braków językowych: ${missingPairs}. Teraz: ${stage} dla #${cur}.`;
+    } else {
+      tInfo.textContent = `Do pełnych kompletów tłumaczeń: ${incompleteArticles.length}/${transArticles.length} artykułów, braków językowych: ${missingPairs}.`;
+    }
+  }
 
   // Update elapsed timers
   startElapsedTimer();
@@ -499,6 +528,65 @@ function startEtaCountdown(secs) {
   }, 1000);
 }
 
+
+function previewKey(articleId, lang) {
+  return `${articleId}:${lang}`;
+}
+
+function renderPreviewData(articleId, lang, t) {
+  const seoFields = [
+    {field:'title', val:t.title, min:50, max:65},
+    {field:'meta_title', val:t.seo?.meta_title, min:50, max:65},
+    {field:'meta_description', val:t.seo?.meta_description, min:135, max:170},
+    {field:'slug', val:t.seo_friendly_url, min:25, max:60},
+  ];
+  const rows = seoFields.map(({field,val,min,max})=>{
+    const v=val||'';
+    const len=[...v].length;
+    const bad=len>max, warn=!bad&&len<min;
+    const cls=bad?'seo-bad':warn?'seo-warn':'seo-ok';
+    const label=bad?'za długie':warn?`za krótkie (min ${min})`:'OK';
+    return `<tr>
+      <td class="mono small">${field}</td>
+      <td style="max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px" title="${esc(v)}">${esc(v)}</td>
+      <td class="mono ${cls}" style="text-align:center">${len}</td>
+      <td class="small" style="text-align:center;color:var(--muted)">${min}–${max}</td>
+      <td class="${cls}" style="text-align:center;font-size:12px">${label}</td>
+    </tr>`;
+  });
+  rows.push(`<tr><td class="mono small">metryki</td><td class="small" colspan="4">słów: <strong>${t.metrics?.words??'—'}</strong> | znaków: <strong>${t.metrics?.chars??'—'}</strong></td></tr>`);
+  $('previewSeoBody').innerHTML = rows.join('');
+  $('previewArticleContent').innerHTML = `<div class="preview-wrap">${t.content_html||'<em class="small">brak treści</em>'}</div>`;
+}
+
+function warmPreviewCache(articles, runtime) {
+  if ((runtime?.status || 'idle') === 'running') return;
+  const candidates = [];
+  (articles || []).forEach(a => {
+    const aid = a.article_id;
+    if (!aid) return;
+    langCols.forEach(lg => {
+      if (a.langs?.[lg]?.status === 'done') {
+        const k = previewKey(aid, lg);
+        if (!_previewCache.has(k) && !_previewWarmInFlight.has(k)) candidates.push([aid, lg, k]);
+      }
+    });
+  });
+  candidates.slice(0, 6).forEach(([aid, lg, k], idx) => {
+    _previewWarmInFlight.add(k);
+    setTimeout(async () => {
+      try {
+        const res = await fetch(`?action=get_article_preview&article_id=${encodeURIComponent(aid)}&lang=${encodeURIComponent(lg)}`);
+        const data = await res.json();
+        if (data?.ok && data.translation) _previewCache.set(k, data.translation);
+      } catch(_) {
+      } finally {
+        _previewWarmInFlight.delete(k);
+      }
+    }, idx * 120);
+  });
+}
+
 /* ═══════════════════════════════════════════════════════════════
    PREVIEW MODAL
    ═══════════════════════════════════════════════════════════════ */
@@ -508,39 +596,27 @@ const openPreview = async (articleId, lang) => {
   $('previewSeoBody').innerHTML = '<tr><td colspan="5" class="small">Ładowanie…</td></tr>';
   $('previewArticleContent').innerHTML = '';
 
+  const cacheKey = previewKey(articleId, lang);
+  const cached = _previewCache.get(cacheKey);
+  if (cached) {
+    renderPreviewData(articleId, lang, cached);
+  }
+
   try {
     const res = await fetch(`?action=get_article_preview&article_id=${encodeURIComponent(articleId)}&lang=${encodeURIComponent(lang)}`);
     const data = await res.json();
     if (!data.ok || !data.translation) {
-      $('previewSeoBody').innerHTML = `<tr><td colspan="5" class="seo-bad small">${esc(data.error||'Brak danych')}</td></tr>`;
+      if (!cached) {
+        $('previewSeoBody').innerHTML = `<tr><td colspan="5" class="seo-bad small">${esc(data.error||'Brak danych')}</td></tr>`;
+      }
       return;
     }
-    const t = data.translation;
-    const seoFields = [
-      {field:'title', val:t.title, min:50, max:65},
-      {field:'meta_title', val:t.seo?.meta_title, min:50, max:65},
-      {field:'meta_description', val:t.seo?.meta_description, min:135, max:170},
-      {field:'slug', val:t.seo_friendly_url, min:25, max:60},
-    ];
-    const rows = seoFields.map(({field,val,min,max})=>{
-      const v=val||'';
-      const len=[...v].length;
-      const bad=len>max, warn=!bad&&len<min;
-      const cls=bad?'seo-bad':warn?'seo-warn':'seo-ok';
-      const label=bad?'za długie':warn?`za krótkie (min ${min})`:'OK';
-      return `<tr>
-        <td class="mono small">${field}</td>
-        <td style="max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px" title="${esc(v)}">${esc(v)}</td>
-        <td class="mono ${cls}" style="text-align:center">${len}</td>
-        <td class="small" style="text-align:center;color:var(--muted)">${min}–${max}</td>
-        <td class="${cls}" style="text-align:center;font-size:12px">${label}</td>
-      </tr>`;
-    });
-    rows.push(`<tr><td class="mono small">metryki</td><td class="small" colspan="4">słów: <strong>${t.metrics?.words??'—'}</strong> | znaków: <strong>${t.metrics?.chars??'—'}</strong></td></tr>`);
-    $('previewSeoBody').innerHTML = rows.join('');
-    $('previewArticleContent').innerHTML = `<div class="preview-wrap">${t.content_html||'<em class="small">brak treści</em>'}</div>`;
+    _previewCache.set(cacheKey, data.translation);
+    renderPreviewData(articleId, lang, data.translation);
   } catch(e) {
-    $('previewSeoBody').innerHTML = `<tr><td colspan="5" class="seo-bad small">${esc(e.message)}</td></tr>`;
+    if (!cached) {
+      $('previewSeoBody').innerHTML = `<tr><td colspan="5" class="seo-bad small">${esc(e.message)}</td></tr>`;
+    }
   }
 };
 
