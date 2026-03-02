@@ -19,6 +19,7 @@ let stateCache = null;
 let keyOk = false;
 let runnerActive = false;
 let _articleSync = 0;
+let _lastRuntimeSig = null;
 let _elapsedInterval = null;
 let _deleteArticleId = null;
 let _rewriteArticleId = null;
@@ -59,7 +60,7 @@ const setKey = debounce(async () => {
   if (!v) { setKeyUi(false, 'brak klucza'); return; }
   try { const fd = new FormData(); fd.append('api_key', v); await api('set_api_key', fd); await testKey(); }
   catch(e) { setKeyUi(false, 'błąd', e.message); }
-}, 800);
+}, 300);
 
 $('apiKey').addEventListener('input', setKey);
 $('btnTestKey').addEventListener('click', testKey);
@@ -560,7 +561,6 @@ function renderPreviewData(articleId, lang, t) {
 }
 
 function warmPreviewCache(articles, runtime) {
-  if ((runtime?.status || 'idle') === 'running') return;
   const candidates = [];
   (articles || []).forEach(a => {
     const aid = a.article_id;
@@ -583,7 +583,7 @@ function warmPreviewCache(articles, runtime) {
       } finally {
         _previewWarmInFlight.delete(k);
       }
-    }, idx * 120);
+    }, idx * 30);
   });
 }
 
@@ -842,8 +842,16 @@ const syncStatus = async () => {
     renderLog(s.state.log || []);
     refreshControls();
     maybeOpenModal(s.state);
+
+    const rt = s.state?.runtime || {};
+    const sig = [rt.status || '', rt.phase || '', rt.current_stage || '', rt.current_article_id || '', rt.current_topic_uid || '', rt.current_step_start_ts || ''].join('|');
+    const changed = sig !== _lastRuntimeSig;
+    _lastRuntimeSig = sig;
+
     _articleSync++;
-    if (_articleSync % 4 === 0) fetchArticles();
+    if (changed || rt.status === 'running' || (_articleSync % 2 === 0)) {
+      fetchArticles();
+    }
   } catch(e) { console.error('syncStatus:', e); }
 };
 
@@ -859,7 +867,7 @@ const startRunner = () => {
     if (st.runtime?.status === 'running') {
       try { await api('run_step'); } catch(e) { console.error('run_step:', e); }
       await fetchArticles();
-      setTimeout(tick, 600);
+      setTimeout(tick, 50);
       return;
     }
     runnerActive = false;
