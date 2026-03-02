@@ -44,6 +44,46 @@ let keyOk = false;
 let runnerActive = false;
 let _articleSync = 0;
 let _lastRuntimeSig = null;
+
+// Keep screen awake during long processing (like YouTube behavior)
+let _wakeLock = null;
+let _wakeLockEnabled = false;
+
+async function requestWakeLock() {
+  try {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible') return false;
+    if (_wakeLock) return true;
+    _wakeLock = await navigator.wakeLock.request('screen');
+    _wakeLockEnabled = true;
+    _wakeLock.addEventListener('release', () => {
+      _wakeLock = null;
+      _wakeLockEnabled = false;
+    });
+    return true;
+  } catch (e) {
+    _wakeLock = null;
+    _wakeLockEnabled = false;
+    return false;
+  }
+}
+
+async function releaseWakeLock() {
+  try {
+    if (_wakeLock) await _wakeLock.release();
+  } catch (_) {
+  } finally {
+    _wakeLock = null;
+    _wakeLockEnabled = false;
+  }
+}
+
+async function syncWakeLock() {
+  const status = stateCache?.state?.runtime?.status || 'idle';
+  const shouldKeepAwake = ['running', 'paused', 'waiting_user_decision'].includes(status);
+  if (shouldKeepAwake) await requestWakeLock();
+  else await releaseWakeLock();
+}
+
 let _elapsedInterval = null;
 let _deleteArticleId = null;
 let _rewriteArticleId = null;
@@ -964,6 +1004,7 @@ const syncStatus = async () => {
     renderLog(s.state.log || []);
     refreshControls();
     maybeOpenModal(s.state);
+    await syncWakeLock();
 
     const rt = s.state?.runtime || {};
     const sig = [rt.status || '', rt.phase || '', rt.current_stage || '', rt.current_article_id || '', rt.current_topic_uid || '', rt.current_step_start_ts || ''].join('|');
@@ -996,6 +1037,17 @@ const startRunner = () => {
   };
   tick();
 };
+
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    syncWakeLock();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  releaseWakeLock();
+});
 
 /* ═══════════════════════════════════════════════════════════════
    INIT
